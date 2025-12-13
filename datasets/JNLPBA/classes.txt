@@ -1,0 +1,11 @@
+B-DNA
+I-DNA
+B-cell_line
+I-cell_line
+B-protein
+I-protein
+B-cell_type
+I-cell_type
+B-RNA
+I-RNA
+O

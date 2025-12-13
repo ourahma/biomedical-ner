@@ -1,0 +1,17 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Ignorer les checkpoints et fichiers spécifiques
+.ipynb_checkpoints/notebook-checkpoint.ipynb
+env_dl/
+README.md
+checkpoints/
+checkpoints/best_model_crf.pth
+final_biomedical_ner_model/*.json
+final_biomedical_ner_model/*.txt
+final_biomedical_ner_model/final_biomedical_ner_model.pth
