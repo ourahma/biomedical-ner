@@ -8,10 +8,13 @@ wheels/
 
 # Ignorer les checkpoints et fichiers spécifiques
 .ipynb_checkpoints/notebook-checkpoint.ipynb
-env_dl/
-README.md
+.venv/
+.ipynb_checkpoints/
+
 checkpoints/
 checkpoints/best_model_crf.pth
 final_biomedical_ner_model/*.json
 final_biomedical_ner_model/*.txt
 final_biomedical_ner_model/final_biomedical_ner_model.pth
+
+embeddings/

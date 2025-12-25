@@ -1,43 +1,58 @@
 import os
 import re
+import nltk
+from nltk.tokenize import sent_tokenize, word_tokenize
+from gensim.models import Word2Vec
+import numpy as np
+import os
 
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
+    
 ### loading data
 def load_jnlpba_dataset(base_path):
     """
-    Charge le dataset JNLPBA avec ses 4 fichiers
+    Charge le dataset JNLPBA avec ses fichiers train/devel/test
     """
     print(f"Chargement du dataset JNLPBA depuis: {base_path}")
     
-    # Chargement des fichiers
     all_sentences = []
-    for filename in os.listdir(base_path):
-        if filename.endswith(".tsv"):
-            with open(os.path.join(base_path, 'train.tsv'), 'r', encoding='utf-8') as f:
-                sentence = []
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        if sentence:
-                            all_sentences.append(sentence)
-                            sentence = []
-                        continue
-                    
-                    # Ignorer -DOCSTART-
-                    if line.startswith('-DOCSTART-'):
-                        continue
-                        
-                    token, label = line.split('\t')
-                    sentence.append((token, label))
+    # Charger tous les fichiers .tsv
+    for filename in ['train.tsv', 'devel.tsv', 'test.tsv']:
+        file_path = os.path.join(base_path, filename)
+        if not os.path.exists(file_path):
+            continue
+            
+        with open(file_path, 'r', encoding='utf-8') as f:
+            sentence = []
+            for line in f:
+                line = line.strip()
+                if not line:
+                    if sentence:
+                        all_sentences.append(sentence)
+                        sentence = []
+                    continue
                 
-                if sentence:
-                    all_sentences.append(sentence)
+                if line.startswith('-DOCSTART-'):
+                    continue
+                    
+                parts = line.split('\t')
+                if len(parts) >= 2:
+                    token, label = parts[0], parts[1]
+                    sentence.append((token, label))
+            
+            if sentence:
+                all_sentences.append(sentence)
     
     # Chargement des classes
-    with open(os.path.join(base_path, 'classes.txt'), 'r', encoding='utf-8') as f:
-        classes = [line.strip() for line in f if line.strip()]
+    classes = ['B-DNA', 'I-DNA', 'B-cell_line', 'I-cell_line', 
+               'B-protein', 'I-protein', 'B-cell_type', 'I-cell_type',
+               'B-RNA', 'I-RNA', 'O']
     
     print(f"- sentences: {len(all_sentences)} phrases")
-    print(f"- Classes: {classes}")
+    print(f"- {len(classes)} Classes: {classes}")
     
     return all_sentences, classes
 
@@ -101,59 +116,195 @@ def load_ncbi_dataset(folder_path):
     
     return data
 
+
 def prepare_ncbi_for_ner(ncbi_data):
     """
-    Prépare les données NCBI au format BIO pour le NER
+    Convertit NCBI Disease Corpus en format identique à JNLPBA :
+    List[Tuple[List[tokens], List[BIO-tags]]]
     """
     sentences = []
-    
+
     for doc in ncbi_data:
-        text = doc['text']
-        entities = doc['entities']
+        text = doc["text"]
+        entities = doc["entities"]
+
+        # Trier les entités par offset
+        entities = sorted(entities, key=lambda e: e["start"])
+
+        # Découpage en phrases
+        try:
+            raw_sentences = sent_tokenize(text)
+        except:
+            raw_sentences = [text]
+
+        char_offset = 0  # offset global dans le document
+
+        for sent in raw_sentences:
+            sent = sent.strip()
+            if not sent:
+                char_offset += len(sent) + 1
+                continue
+
+            # Tokenisation avec positions locales
+            tokens = []
+            spans = []
+            start = 0
+
+            for match in re.finditer(r"\S+", sent):
+                tok = match.group()
+                tok_start = match.start()
+                tok_end = match.end()
+                tokens.append(tok)
+                spans.append((tok_start, tok_end))
+
+            labels = ["O"] * len(tokens)
+
+            sent_start = char_offset
+            sent_end = sent_start + len(sent)
+
+            # Projection BIO exacte
+            for ent in entities:
+                if ent["end"] <= sent_start or ent["start"] >= sent_end:
+                    continue
+
+                for i, (tok_start, tok_end) in enumerate(spans):
+                    abs_start = sent_start + tok_start
+                    abs_end = sent_start + tok_end
+
+                    if abs_start >= ent["start"] and abs_end <= ent["end"]:
+                        if abs_start == ent["start"]:
+                            labels[i] = f"B-{ent['type']}"
+                        else:
+                            labels[i] = f"I-{ent['type']}"
+
+            # Format JNLPBA : Tuple de deux listes
+            sentences.append((tokens, labels))
+            char_offset += len(sent) + 1
+
+    print(f"Total de phrases générées (format JNLPBA): {len(sentences)}")
+    
+    # Vérification du format
+    if sentences:
+        print("\nVérification du format:")
+        print(f"Type du premier élément: {type(sentences[0])}")
+        print(f"Longueur du tuple: {len(sentences[0])}")
         
-        # Segmentation en phrases approximative
-        sentence_boundaries = []
-        start = 0
-        
-        for match in re.finditer(r'[.!?]\s+', text):
-            end = match.end()
-            sentence_boundaries.append((start, end))
-            start = end
-        
-        if start < len(text):
-            sentence_boundaries.append((start, len(text)))
-        
-        # Pour chaque phrase, créer des annotations BIO
-        for sent_start, sent_end in sentence_boundaries:
-            sentence_text = text[sent_start:sent_end]
-            tokens = sentence_text.split()
-            
-            # Initialiser tous les tokens comme O
-            labels = ['O'] * len(tokens)
-            
-            # Marquer les entités dans cette phrase
-            for entity in entities:
-                entity_start = entity['start']
-                entity_end = entity['end']
-                entity_text = entity['text']
-                entity_type = entity['type']
-                
-                # Vérifier si l'entité est dans cette phrase
-                if entity_start >= sent_start and entity_end <= sent_end:
-                    # Trouver les tokens couverts par l'entité
-                    entity_tokens = entity_text.split()
-                    
-                    # Recherche approximative des tokens
-                    for i in range(len(tokens) - len(entity_tokens) + 1):
-                        if tokens[i:i+len(entity_tokens)] == entity_tokens:
-                            # Marquer comme B-XXX pour le premier token, I-XXX pour les suivants
-                            labels[i] = f'B-{entity_type}'
-                            for j in range(1, len(entity_tokens)):
-                                labels[i+j] = f'I-{entity_type}'
-                            break
-            
-            # Ajouter la phrase avec ses labels
-            sentence_with_labels = [(token, label) for token, label in zip(tokens, labels)]
-            sentences.append(sentence_with_labels)
+        tokens, labels = sentences[0]
+        print(f"Type tokens: {type(tokens)} (longueur: {len(tokens)})")
+        print(f"Type labels: {type(labels)} (longueur: {len(labels)})")
+        print(f"Exemple tokens[:5]: {tokens[:5]}")
+        print(f"Exemple labels[:5]: {labels[:5]}")
     
     return sentences
+
+
+
+def train_word2vec_embeddings(sentences, vector_size=200, window=5, min_count=2, workers=4):
+    """
+    Entraîne un modèle Word2Vec sur vos données
+    sentences: Liste de phrases (liste de tokens)
+    """
+    # Extraire les tokens de toutes les phrases
+    tokenized_sentences = []
+    for tokens, _ in sentences:
+        # Convertir en minuscules pour l'entraînement
+        lower_tokens = [token.lower() for token in tokens]
+        tokenized_sentences.append(lower_tokens)
+    
+    print(f"Nombre de phrases pour Word2Vec: {len(tokenized_sentences)}")
+    print(f"Première phrase: {tokenized_sentences[0][:10]}...")
+    
+    # Entraîner Word2Vec
+    print("Entraînement du modèle Word2Vec...")
+    model = Word2Vec(
+        sentences=tokenized_sentences,
+        vector_size=vector_size,
+        window=window,
+        min_count=min_count,
+        workers=workers,
+        sg=1,  # Skip-gram (1) ou CBOW (0)
+        epochs=10  # Nombre d'itérations
+    )
+    
+    print(f"Vocabulaire Word2Vec: {len(model.wv)} mots")
+    print(f"Taille des vecteurs: {vector_size}")
+    
+    return model
+
+def save_word2vec_model(model, filepath):
+    """
+    Sauvegarde le modèle Word2Vec
+    """
+    # S'assurer que le répertoire existe
+    directory = os.path.dirname(filepath)
+    if directory and not os.path.exists(directory):
+        os.makedirs(directory, exist_ok=True)
+        print(f"Création du répertoire: {directory}")
+    
+    # Ajouter l'extension .model si non présente
+    if not filepath.endswith('.model'):
+        filepath += '.model'
+    
+    model.save(filepath)
+    print(f"Modèle Word2Vec sauvegardé: {filepath}")
+    return filepath
+
+def load_word2vec_model(filepath):
+    """
+    Charge un modèle Word2Vec
+    """
+    # Essayer différentes extensions
+    possible_paths = [
+        filepath,
+        filepath + '.model',
+        filepath + '.bin'
+    ]
+    
+    for path in possible_paths:
+        if os.path.exists(path):
+            try:
+                model = Word2Vec.load(path)
+                print(f"Modèle Word2Vec chargé: {path}")
+                return model
+            except Exception as e:
+                print(f"Erreur lors du chargement de {path}: {e}")
+                continue
+    
+    print(f"Modèle Word2Vec non trouvé: {filepath}")
+    return None
+
+def create_embedding_matrix_from_word2vec(word2vec_model, vocab, vector_size=200):
+    """
+    Crée une matrice d'embeddings alignée avec votre vocabulaire
+    """
+    embedding_matrix = np.zeros((len(vocab), vector_size))
+    
+    words_found = 0
+    words_not_found = 0
+    
+    for word, idx in vocab.items():
+        if word == '<PAD>':
+            # Vecteur nul pour le padding
+            embedding_matrix[idx] = np.zeros(vector_size)
+        elif word == '<UNK>':
+            # Vecteur aléatoire pour les mots inconnus
+            embedding_matrix[idx] = np.random.normal(scale=0.1, size=(vector_size,))
+        elif word == '<NUM>':
+            # Vecteur spécial pour les nombres
+            embedding_matrix[idx] = np.random.normal(scale=0.05, size=(vector_size,))
+        else:
+            # Chercher le mot dans Word2Vec
+            word_lower = word.lower()
+            if word_lower in word2vec_model.wv:
+                embedding_matrix[idx] = word2vec_model.wv[word_lower]
+                words_found += 1
+            else:
+                # Mot non trouvé -> vecteur aléatoire
+                embedding_matrix[idx] = np.random.normal(scale=0.1, size=(vector_size,))
+                words_not_found += 1
+    
+    print(f"Mots trouvés dans Word2Vec: {words_found}")
+    print(f"Mots non trouvés: {words_not_found}")
+    print(f"Couverture: {words_found/(words_found+words_not_found)*100:.2f}%")
+    
+    return embedding_matrix
