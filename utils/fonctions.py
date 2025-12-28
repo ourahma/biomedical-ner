@@ -173,6 +173,9 @@ def prepare_ncbi_for_ner(ncbi_data):
                     abs_start = sent_start + tok_start
                     abs_end = sent_start + tok_end
 
+                    # ✅❌ Check if token overlaps with entity
+                    token_overlaps = not (abs_end <= ent["start"] or abs_start >= ent["end"])
+
                     if abs_start >= ent["start"] and abs_end <= ent["end"]:
                         if abs_start == ent["start"]:
                             labels[i] = f"B-{ent['type']}"
