@@ -38,12 +38,19 @@ class CharBiLSTM(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, char_ids):
-        B, T, W = char_ids.size()
-        char_ids = char_ids.view(B*T, W)
-        emb = self.char_embedding(char_ids)
-        _, (h, _) = self.lstm(emb)
-        out = torch.cat([h[0], h[1]], dim=1)
-        return self.dropout(out).view(B, T, -1)
+        B, T, W = char_ids.size()          # B=batch, T=seq_len, W=word_len
+        char_ids = char_ids.view(B*T, W)   # aplatissement pour passer dans LSTM
+        emb = self.char_embedding(char_ids)  # (B*T, W, char_embed_dim)
+
+        output, _ = self.lstm(emb)         # sortie LSTM complète (B*T, W, hidden*2)
+        output = self.dropout(output)
+
+        # max pooling sur les caractères pour obtenir un vecteur par mot
+        out, _ = torch.max(output, dim=1)  # (B*T, hidden*2)
+
+        return out.view(B, T, -1)          # reshape pour (B, T, hidden*2)
+
+
 
 # ==================== Manhattan Attention ====================
 class ManhattanAttention(nn.Module):
@@ -76,6 +83,7 @@ class CombinatorialNER(nn.Module):
         self.dataset = dataset
         self.use_char_cnn = use_char_cnn
         self.use_char_lstm = use_char_lstm
+        self.lstm_hidden_dim = lstm_hidden_dim 
         self.use_attention = use_attention
         self.use_fc_fusion = use_fc_fusion
         self.use_lstm = use_lstm
@@ -99,7 +107,7 @@ class CombinatorialNER(nn.Module):
         # Combined dimension
         char_dim = 0
         if self.use_char_cnn:
-            char_dim += 32 * (len(cnn_kernels))
+            char_dim += 32 * len(cnn_kernels)
         if self.use_char_lstm:
             char_dim += 100  # 50*2
 
@@ -107,18 +115,19 @@ class CombinatorialNER(nn.Module):
 
         # FC fusion
         if self.use_fc_fusion:
+            fusion_out_dim = 200
             if dataset=="NCBI":
                 self.fusion = nn.Sequential(
-                    nn.Linear(combined_dim, 200),
+                    nn.Linear(combined_dim, fusion_out_dim),
                     nn.ReLU(),
                     nn.Dropout(dropout)
                 )
             else:
                 self.fusion = nn.Sequential(
-                    nn.Linear(combined_dim, 200),
+                    nn.Linear(combined_dim, fusion_out_dim),
                     nn.Dropout(dropout)
                 )
-            lstm_input_dim = 200
+            lstm_input_dim = fusion_out_dim
         else:
             lstm_input_dim = combined_dim
 
@@ -133,16 +142,21 @@ class CombinatorialNER(nn.Module):
 
             if self.use_attention:
                 self.attention_layer = ManhattanAttention(lstm_hidden_dim)
-                lstm_output_dim = lstm_hidden_dim * 2  
+                # Correctement défini ici après attention_layer
+                self.attention_projection = nn.Linear(lstm_hidden_dim*2, lstm_hidden_dim)
+                lstm_output_dim = lstm_hidden_dim
             else:
                 self.attention_layer = None
                 lstm_output_dim = lstm_hidden_dim
         else:
-            self.context_lstm = None
+            self.context_lstm = nn.LSTM(
+                input_size=lstm_input_dim,
+                hidden_size=lstm_input_dim // 2,
+                batch_first=True,
+                bidirectional=True
+            )
             self.attention_layer = None
             lstm_output_dim = lstm_input_dim
-
-
 
         # Emission & CRF
         self.emission = nn.Linear(lstm_output_dim, len(tag_to_idx))
@@ -150,6 +164,7 @@ class CombinatorialNER(nn.Module):
 
     def forward(self, word_ids, char_ids=None, mask=None, tags=None):
         word_emb = self.word_embedding(word_ids)
+
         char_embs = []
         if self.use_char_cnn and char_ids is not None:
             char_embs.append(self.char_cnn(char_ids))
@@ -164,6 +179,7 @@ class CombinatorialNER(nn.Module):
             lstm_out, _ = self.context_lstm(combined)
             if self.attention_layer is not None and mask is not None:
                 lstm_out = self.attention_layer(lstm_out, mask)
+                lstm_out = self.attention_projection(lstm_out)
         else:
             lstm_out = combined
 

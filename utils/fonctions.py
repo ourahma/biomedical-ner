@@ -6,7 +6,7 @@ from gensim.models import Word2Vec
 import matplotlib.pyplot as plt
 from collections import Counter
 import numpy as np
-import os
+
 
 try:
     nltk.data.find('tokenizers/punkt')
@@ -59,134 +59,106 @@ def load_jnlpba_dataset(base_path):
     return all_sentences, classes
 
 def load_ncbi_dataset(folder_path):
-    """
-    Charge le deuxième dataset NCBI avec les annotations XML-like
-    """
     print(f"Chargement du dataset NCBI depuis: {folder_path}")
-    
+
     data = []
+
+    tag_pattern = re.compile(r'<category="([^"]+)">([^<]+)</category>')
+
     for filename in os.listdir(folder_path):
-        file_path = os.path.join(folder_path,filename)
-        with open(file_path, 'r', encoding='utf-8') as f:
-            
+        file_path = os.path.join(folder_path, filename)
+
+        with open(file_path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
-                    
-                # Format: ID\tTitre\tTexte
-                parts = line.split('\t')
+
+                parts = line.split("\t")
                 if len(parts) < 3:
                     continue
-                    
+
                 doc_id, title, text = parts[0], parts[1], parts[2]
-                
-                # Extraction des entités annotées
+
                 entities = []
-                offset = 0
-                
-                # Recherche des annotations
-                pattern = r'<category="([^"]+)">([^<]+)</category>'
-                for match in re.finditer(pattern, text):
-                    category = match.group(1)
+                clean_text = ""
+                last_end = 0
+
+                # Reconstruire le texte sans balises en recalculant les offsets
+                for match in tag_pattern.finditer(text):
+                    start, end = match.span()
                     mention = match.group(2)
-                    start = match.start() - offset
-                    end = match.end() - offset
-                    
+
+                    clean_text += text[last_end:start]
+                    ent_start = len(clean_text)
+                    clean_text += mention
+                    ent_end = len(clean_text)
+
                     entities.append({
-                        'start': start,
-                        'end': end,
-                        'text': mention,
-                        'type': category
+                        "start": ent_start,
+                        "end": ent_end,
+                        "type": "Disease"   
                     })
-                    
-                    # Mise à jour de l'offset pour les balises supprimées
-                    offset += len(match.group(0)) - len(mention)
-                
-                # Nettoyage du texte (suppression des balises)
-                clean_text = re.sub(pattern, r'\2', text)
-                
+
+                    last_end = end
+
+                clean_text += text[last_end:]
+
                 data.append({
-                    'id': doc_id,
-                    'title': title,
-                    'text': clean_text,
-                    'entities': entities
+                    "id": doc_id,
+                    "title": title,
+                    "text": clean_text,
+                    "entities": entities
                 })
-    
+
     print(f"Documents chargés: {len(data)}")
-    print(f"Exemple d'entités dans le premier document: {len(data[0]['entities']) if data else 0}")
-    
+    print(f"Entités dans le premier document: {len(data[0]['entities']) if data else 0}")
+
     return data
 
 
 def prepare_ncbi_for_ner(ncbi_data):
     """
-    Convertit NCBI Disease Corpus en format identique à JNLPBA :
-    List[Tuple[List[tokens], List[BIO-tags]]]
+    Convertit NCBI Disease Corpus vers :
+    List[Tuple[List[str], List[str]]] en BIO (B-Disease / I-Disease / O)
     """
     sentences = []
+
+    token_pattern = re.compile(r"\w+|[^\w\s]")
 
     for doc in ncbi_data:
         text = doc["text"]
         entities = doc["entities"]
 
-        # Trier les entités par offset
-        entities = sorted(entities, key=lambda e: e["start"])
+        tokens = []
+        spans = []
 
-        # Découpage en phrases
-        try:
-            raw_sentences = sent_tokenize(text)
-        except:
-            raw_sentences = [text]
+        # Tokenisation avec offsets stables
+        for match in token_pattern.finditer(text):
+            tokens.append(match.group())
+            spans.append((match.start(), match.end()))
 
-        char_offset = 0  # offset global dans le document
+        labels = ["O"] * len(tokens)
 
-        for sent in raw_sentences:
-            sent = sent.strip()
-            if not sent:
-                char_offset += len(sent) + 1
-                continue
+        # Projection BIO par overlap
+        for ent in entities:
+            ent_start, ent_end = ent["start"], ent["end"]
+            first_token = True
 
-            # Tokenisation avec positions locales
-            tokens = []
-            spans = []
-            start = 0
+            for i, (tok_start, tok_end) in enumerate(spans):
+                overlaps = not (tok_end <= ent_start or tok_start >= ent_end)
 
-            for match in re.finditer(r"\S+", sent):
-                tok = match.group()
-                tok_start = match.start()
-                tok_end = match.end()
-                tokens.append(tok)
-                spans.append((tok_start, tok_end))
+                if overlaps:
+                    if first_token:
+                        labels[i] = "B-Disease"
+                        first_token = False
+                    else:
+                        labels[i] = "I-Disease"
 
-            labels = ["O"] * len(tokens)
+        sentences.append((tokens, labels))
 
-            sent_start = char_offset
-            sent_end = sent_start + len(sent)
-
-            # Projection BIO exacte
-            for ent in entities:
-                if ent["end"] <= sent_start or ent["start"] >= sent_end:
-                    continue
-
-                for i, (tok_start, tok_end) in enumerate(spans):
-                    abs_start = sent_start + tok_start
-                    abs_end = sent_start + tok_end
-
-                    # ✅❌ Check if token overlaps with entity
-                    token_overlaps = not (abs_end <= ent["start"] or abs_start >= ent["end"])
-
-                    if abs_start >= ent["start"] and abs_end <= ent["end"]:
-                        if abs_start == ent["start"]:
-                            labels[i] = f"B-{ent['type']}"
-                        else:
-                            labels[i] = f"I-{ent['type']}"
-
-            # Format JNLPBA : Tuple de deux listes
-            sentences.append((tokens, labels))
-            char_offset += len(sent) + 1
-    
     return sentences
+
 
 
 
@@ -564,3 +536,77 @@ def visualize_dataset_distribution(results, dataset_name="Dataset"):
     print("\n" + "=" * 60)
     print("ANALYSE TERMINÉE")
     print("=" * 60)
+    
+def convert_to_standard_format(results):
+    """
+    Convertit les résultats du format NCBI (tuple de 2 listes) vers le format standard.
+    
+    Args:
+        results: Dictionnaire avec des phrases au format tuple (tokens, tags)
+    
+    Returns:
+        Nouveau dictionnaire avec les phrases au format standard [(token, tag), ...]
+    """
+    new_results = {}
+    
+    for key, value in results.items():
+        if key.endswith('_sentences'):
+            # Convertir les phrases
+            converted_sentences = []
+            print(f"\nDEBUG Conversion - Clé: {key}")
+            print(f"Nombre de phrases: {len(value)}")
+            
+            # Afficher la première phrase avant conversion
+            if value:
+                first_sentence = value[0]
+                print(f"\nPremière phrase avant conversion:")
+                print(f"Type: {type(first_sentence)}")
+                print(f"Est-ce un tuple? {isinstance(first_sentence, tuple)}")
+                print(f"Longueur du tuple: {len(first_sentence)}")
+                
+                if isinstance(first_sentence, tuple) and len(first_sentence) == 2:
+                    print(f"Premier élément (tokens): {first_sentence[0][:5]}...")  # Afficher seulement les 5 premiers
+                    print(f"Second élément (tags): {first_sentence[1][:5]}...")      # Afficher seulement les 5 premiers
+            
+            for i, sent in enumerate(value):
+                try:
+                    # Format tuple (tokens, tags)
+                    if isinstance(sent, tuple) and len(sent) == 2:
+                        tokens, tags = sent[0], sent[1]
+                        # Vérifier que les longueurs correspondent
+                        if len(tokens) != len(tags):
+                            print(f"WARNING: Longueurs différentes dans la phrase {i}: tokens={len(tokens)}, tags={len(tags)}")
+                        
+                        # Convertir en liste de tuples
+                        converted_sent = list(zip(tokens, tags))
+                        converted_sentences.append(converted_sent)
+                        
+                        # Debug pour la première phrase
+                        if i == 0:
+                            print(f"\nPremière phrase après conversion:")
+                            print(f"Type: {type(converted_sent)}")
+                            print(f"Longueur: {len(converted_sent)}")
+                            print(f"Premier élément: {converted_sent[0]}")
+                            print(f"Type du premier élément: {type(converted_sent[0])}")
+                    
+                    # Format liste [tokens, tags] (ancien format)
+                    elif isinstance(sent, list) and len(sent) == 2:
+                        tokens, tags = sent[0], sent[1]
+                        converted_sent = list(zip(tokens, tags))
+                        converted_sentences.append(converted_sent)
+                    
+                    else:
+                        print(f"WARNING: Format inattendu pour la phrase {i}: {type(sent)}")
+                        converted_sentences.append(sent)
+                        
+                except Exception as e:
+                    print(f"ERREUR lors de la conversion de la phrase {i}: {e}")
+                    print(f"Contenu: {sent}")
+                    converted_sentences.append(sent)
+            
+            new_results[key] = converted_sentences
+        else:
+            # Copier les autres clés
+            new_results[key] = value
+    
+    return new_results
