@@ -1387,15 +1387,6 @@ def about_page():
         - Activez le mode débogage pour voir les détails
         - Vérifiez les classes disponibles dans la sidebar
         """)
-    
-    st.markdown("---")
-    st.markdown("#### 📞 Support")
-    st.markdown("""
-    Pour toute question ou problème :
-    - Vérifiez que les chemins des modèles sont corrects
-    - Activez le mode débogage pour plus d'informations
-    - Contactez l'administrateur pour les problèmes techniques
-    """)
 
 # ============================================
 # NAVIGATION PRINCIPALE
