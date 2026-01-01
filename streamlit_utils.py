@@ -62,7 +62,7 @@ def load_all_components(model_checkpoint_path: str, vocab_dir: str, word2vec_mod
             
         except Exception as e:
             print(f"⚠️ Erreur Word2Vec: {e}")
-            pretrained_embeddings = None
+            return
     
     # 3. Charger le checkpoint du modèle
     print(f"🤖 Chargement du modèle: {model_checkpoint_path}")

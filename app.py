@@ -13,13 +13,11 @@ import plotly.graph_objects as go
 import time
 import json
 
-# Import de votre modèle (ajustez le chemin selon votre structure)
 import sys
-sys.path.append('..')  # Pour importer depuis le dossier parent
+sys.path.append('..') 
 from streamlit_utils import load_all_components
 
-from models.models import CombinatorialNER  # Ajustez selon votre structure
-
+from models.models import CombinatorialNER  
 # ============================================
 # CONFIGURATION
 # ============================================
@@ -48,6 +46,15 @@ st.markdown("""
         border-radius: 4px;
         font-weight: 500;
         font-size: 0.9em;
+        border: 1px solid rgba(0,0,0,0.1);
+    }
+    .entity-tag {
+        background-color: #f0f0f0;
+        padding: 1px 4px;
+        border-radius: 3px;
+        font-size: 0.8em;
+        margin-left: 5px;
+        color: #666;
     }
     .results-box {
         background-color: #f5f5f5;
@@ -55,9 +62,14 @@ st.markdown("""
         padding: 20px;
         margin: 10px 0;
         border-left: 5px solid #1E90FF;
+        line-height: 1.8;
     }
     .tab-content {
         padding: 20px 0;
+    }
+    .tag-table {
+        font-family: monospace;
+        font-size: 0.9em;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -123,6 +135,8 @@ class StreamlitNERPredictor:
         # Vérifier la taille des vocabulaires
         print(f"📊 Taille vocab: {len(self.vocab)}, char vocab: {len(self.char_vocab)}, tags: {len(self.tag_to_idx)}")
         
+        if dataset_name == 'NCBI' and len(self.tag_to_idx) > 4:
+            print(f"Conversion NCBI: {len(self.tag_to_idx)} classes -> 4 classes simplifiées")
         # Configuration selon le dataset
         if dataset_name == 'JNLPBA':
             lstm_hidden_dim = 256
@@ -319,10 +333,11 @@ class StreamlitNERPredictor:
         return emissions
     
     def extract_entities(self, predictions: List[Tuple[str, str]]):
-        """Extraction des entités des prédictions"""
+        """Extraction des entités des prédictions avec tags individuels"""
         entities = []
         current_entity = None
         entity_tokens = []
+        entity_tags = []  # Stocker les tags individuels
         entity_type = None
         entity_start_idx = 0
         
@@ -333,7 +348,8 @@ class StreamlitNERPredictor:
                     entities.append({
                         'text': ' '.join(entity_tokens),
                         'type': entity_type[2:],
-                        'tag': entity_type,
+                        'tag': entity_type,  # Garde seulement B-Disease
+                        'individual_tags': entity_tags.copy(),  # Tous les tags
                         'tokens': entity_tokens.copy(),
                         'start_position': entity_start_idx,
                         'end_position': idx - 1
@@ -343,11 +359,13 @@ class StreamlitNERPredictor:
                 current_entity = tag[2:]
                 entity_type = tag
                 entity_tokens = [token]
+                entity_tags = [tag]  
                 entity_start_idx = idx
                 
             elif tag.startswith('I-'):
                 if current_entity == tag[2:]:
                     entity_tokens.append(token)
+                    entity_tags.append(tag)  
                 else:
                     # I- sans B- précédent (traitement comme B-)
                     if current_entity:
@@ -355,6 +373,7 @@ class StreamlitNERPredictor:
                             'text': ' '.join(entity_tokens),
                             'type': entity_type[2:],
                             'tag': entity_type,
+                            'individual_tags': entity_tags.copy(),  
                             'tokens': entity_tokens.copy(),
                             'start_position': entity_start_idx,
                             'end_position': idx - 1
@@ -363,6 +382,7 @@ class StreamlitNERPredictor:
                     current_entity = tag[2:]
                     entity_type = 'B-' + tag[2:]  # Convertir en B-
                     entity_tokens = [token]
+                    entity_tags = [tag]  
                     entity_start_idx = idx
             
             else:  # 'O' ou autre
@@ -371,12 +391,14 @@ class StreamlitNERPredictor:
                         'text': ' '.join(entity_tokens),
                         'type': entity_type[2:],
                         'tag': entity_type,
+                        'individual_tags': entity_tags.copy(),  
                         'tokens': entity_tokens.copy(),
                         'start_position': entity_start_idx,
                         'end_position': idx - 1
                     })
                     current_entity = None
                     entity_tokens = []
+                    entity_tags = []
                     entity_start_idx = 0
         
         # Dernière entité
@@ -385,6 +407,7 @@ class StreamlitNERPredictor:
                 'text': ' '.join(entity_tokens),
                 'type': entity_type[2:],
                 'tag': entity_type,
+                'individual_tags': entity_tags.copy(),  
                 'tokens': entity_tokens.copy(),
                 'start_position': entity_start_idx,
                 'end_position': len(predictions) - 1
@@ -432,7 +455,7 @@ def load_jnlpba_components():
             use_char_cnn=False, 
             use_char_lstm=False,
             use_attention=False, 
-            use_fc_fusion=False  # IMPORTANT: False pour JNLPBA selon votre code
+            use_fc_fusion=False  
         )
         
         return predictor
@@ -447,7 +470,7 @@ def load_jnlpba_components():
 def load_ncbi_components():
     """Charge les composants pour NCBI (maladies)"""
     try:
-        # Chemins pour NCBI - CORRIGÉ selon votre structure
+        
         model_path = "./checkpoints/NCBI/WE_char_bilstm_cnn_attention/best_model.pt"
         vocab_dir = "./vocab/ncbi"  # Dossier du vocabulaire NCBI
         word2vec_path = "./word2Vecembeddings/ncbi.model"  # Embeddings NCBI
@@ -492,16 +515,23 @@ def load_ncbi_components():
         return None
 
 def highlight_text(text: str, predictions: List[Tuple[str, str]], dataset: str = 'JNLPBA'):
-    """Surligne le texte avec les entités"""
+    """Surligne le texte avec les entités - CORRIGÉ"""
     entity_colors = ENTITY_COLORS_JNLPBA if dataset == 'JNLPBA' else ENTITY_COLORS_NCBI
     entity_names = ENTITY_NAMES_JNLPBA if dataset == 'JNLPBA' else ENTITY_NAMES_NCBI
     
     highlighted = []
-    for token, tag in predictions:
-        if tag != 'O' and tag != '<PAD>':
+    
+    for i, (token, tag) in enumerate(predictions):
+        if tag not in ['O', '<PAD>'] and tag in entity_colors:
             color = entity_colors.get(tag, '#CCCCCC')
             entity_name = entity_names.get(tag, tag[2:] if tag.startswith(('B-', 'I-')) else tag)
-            highlighted.append(f'<span class="entity-badge" style="background-color: {color};" title="{entity_name}">{token}</span>')
+            
+            # Créer le badge avec le tag affiché
+            highlighted.append(
+                f'<span class="entity-badge" style="background-color: {color};" title="{entity_name}">'
+                f'{token}<span class="entity-tag">{tag}</span>'
+                f'</span>'
+            )
         else:
             highlighted.append(token)
     
@@ -521,11 +551,22 @@ def create_entity_legend(dataset: str = 'JNLPBA'):
     st.markdown(f"### {title}")
     
     entity_items = []
+    already_added = set()  # Pour éviter les doublons
     
+    # Afficher tous les tags B- et I- individuellement
     for tag, color in entity_colors.items():
-        if tag not in ['O', '<PAD>'] and tag.startswith('B-'):
-            entity_name = entity_names.get(tag, tag[2:])
-            entity_items.append((entity_name, color))
+        if tag not in ['O', '<PAD>']:
+            entity_name = entity_names.get(tag, tag)
+            
+            # Pour la légende, on peut regrouper B- et I-
+            base_name = tag[2:] if tag.startswith(('B-', 'I-')) else tag
+            if base_name not in already_added:
+                # Prendre la couleur du tag B- correspondant
+                b_tag = f'B-{base_name}'
+                display_color = entity_colors.get(b_tag, color)
+                
+                entity_items.append((base_name, display_color))
+                already_added.add(base_name)
     
     # Afficher dans des colonnes
     if entity_items:
@@ -560,7 +601,9 @@ def display_debug_info(predictions, entities, dataset):
         if entities:
             st.write("\n**Entités détaillées:**")
             for i, entity in enumerate(entities, 1):
-                st.write(f"{i}. Texte: '{entity['text']}', Type: {entity['type']}, Tags: {entity['tokens']}")
+                st.write(f"{i}. Texte: '{entity['text']}', Type: {entity['type']}")
+                st.write(f"   Tags individuels: {entity['individual_tags']}")
+                st.write(f"   Tokens: {entity['tokens']}")
 
 # ============================================
 # PAGES DE L'APPLICATION
@@ -606,7 +649,7 @@ def biomedical_ner_page():
         - **Device:** {predictor.device}
         """)
         
-        # Option de débogage - CORRIGÉ: utilisation directe du widget
+        # Option de débogage
         st.markdown("---")
         debug_jnlpba = st.checkbox("Afficher les infos de débogage", key="debug_jnlpba_checkbox")
     
@@ -638,21 +681,40 @@ def biomedical_ner_page():
         )
     }
     
+    # Définir les callbacks pour JNLPBA
+    def set_jnlpba_example_genetique():
+        st.session_state.example_text_jnlpba = examples["Génétique"]
+        st.session_state.text_area_jnlpba = examples["Génétique"]
+    
+    def set_jnlpba_example_immunologie():
+        st.session_state.example_text_jnlpba = examples["Immunologie"]
+        st.session_state.text_area_jnlpba = examples["Immunologie"]
+    
+    def set_jnlpba_example_cellulaire():
+        st.session_state.example_text_jnlpba = examples["Cellulaire"]
+        st.session_state.text_area_jnlpba = examples["Cellulaire"]
+    
     col1, col2, col3 = st.columns(3)
     with col1:
-        if st.button("🧬 Exemple Génétique", use_container_width=True, key="ex1_jnlpba"):
-            st.session_state.example_text_jnlpba = examples["Génétique"]
+        st.button("🧬 Exemple Génétique", 
+                  on_click=set_jnlpba_example_genetique, 
+                   width='stretch',
+                  key="ex1_jnlpba")
     with col2:
-        if st.button("🩸 Exemple Immunologie", use_container_width=True, key="ex2_jnlpba"):
-            st.session_state.example_text_jnlpba = examples["Immunologie"]
+        st.button("🩸 Exemple Immunologie", 
+                  on_click=set_jnlpba_example_immunologie, 
+                   width='stretch',
+                  key="ex2_jnlpba")
     with col3:
-        if st.button("🔬 Exemple Cellulaire", use_container_width=True, key="ex3_jnlpba"):
-            st.session_state.example_text_jnlpba = examples["Cellulaire"]
+        st.button("🔬 Exemple Cellulaire", 
+                  on_click=set_jnlpba_example_cellulaire, 
+                   width='stretch',
+                  key="ex3_jnlpba")
     
     # Zone de texte
     text_input = st.text_area(
         "**Texte à analyser:**",
-        value=st.session_state.get('example_text_jnlpba', ''),
+        value=st.session_state.get('text_area_jnlpba', ''),
         height=200,
         placeholder="Collez votre texte biomédical ici...",
         key="text_area_jnlpba"
@@ -661,7 +723,7 @@ def biomedical_ner_page():
     # Bouton de prédiction
     col1, col2 = st.columns([3, 1])
     with col2:
-        analyze = st.button("🔍 Analyser le texte", type="primary", use_container_width=True, key="analyze_jnlpba")
+        analyze = st.button("🔍 Analyser le texte", type="primary",  width='stretch', key="analyze_jnlpba")
     
     if analyze:
         if not text_input.strip():
@@ -712,11 +774,11 @@ def biomedical_ner_page():
             st.metric("Types d'entités", unique_types)
         
         # Onglets
-        tab_names = ["📄 Texte annoté", "📊 Liste des entités", "📈 Statistiques"]
+        tab_names = ["📄 Texte annoté", "🔍 Prédictions brutes", "📊 Entités groupées", "📈 Statistiques"]
         
         # Ajouter l'onglet débogage si l'option est activée
         if debug_jnlpba:
-            tab_names.append("🔍 Détails")
+            tab_names.append("🐛 Détails Débogage")
         
         tabs = st.tabs(tab_names)
         
@@ -725,25 +787,65 @@ def biomedical_ner_page():
             highlighted = highlight_text(results['text'], results['predictions'], 'JNLPBA')
             st.markdown(f'<div class="results-box">{highlighted}</div>', unsafe_allow_html=True)
         
-        with tabs[1]:  # Liste des entités
+        with tabs[1]:  # Prédictions brutes
+            st.markdown("#### Prédictions brutes du modèle")
+            
+            # Afficher sous forme de tableau
+            if results['predictions']:
+                df_data = []
+                for idx, (token, tag) in enumerate(results['predictions']):
+                    is_entity = tag not in ['O', '<PAD>']
+                    color = ENTITY_COLORS_JNLPBA.get(tag, 'transparent') if is_entity else 'transparent'
+                    
+                    df_data.append({
+                        'Position': idx,
+                        'Token': token,
+                        'Tag': tag,
+                        'Type': ENTITY_NAMES_JNLPBA.get(tag, tag[2:] if tag.startswith(('B-', 'I-')) else tag) if is_entity else 'Autre',
+                        'Couleur': color
+                    })
+                
+                df = pd.DataFrame(df_data)
+                
+                # Afficher avec mise en forme des couleurs
+                def color_row(row):
+                    if row['Couleur'] != 'transparent':
+                        return [f'background-color: {row["Couleur"]}'] * len(row)
+                    return [''] * len(row)
+                
+                st.dataframe(df.style.apply(color_row, axis=1), width='stretch', hide_index=True)
+        
+        with tabs[2]:  # Entités groupées
             if results['entities']:
                 df_data = []
                 for entity in results['entities']:
+                    # Utiliser le mapping pour obtenir le nom convivial
                     entity_name = ENTITY_NAMES_JNLPBA.get(entity['tag'], entity['type'])
+                    
                     df_data.append({
                         'Entité': entity['text'],
                         'Type': entity_name,
-                        'Tag': entity['tag'],
-                        'Tokens': len(entity['tokens']),
+                        'Tag Principal': entity['tag'],
+                        'Tags Individuels': ', '.join(entity['individual_tags']),
+                        'Nombre de Tokens': len(entity['tokens']),
                         'Position': f"{entity['start_position']}-{entity['end_position']}"
                     })
                 
                 df = pd.DataFrame(df_data)
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df,  width='stretch', hide_index=True)
+                
+                # Afficher aussi le détail des tags
+                st.markdown("#### Détail des tags par entité:")
+                for i, entity in enumerate(results['entities'], 1):
+                    st.write(f"**{i}. {entity['text']}**")
+                    st.write(f"   Type: {entity['type']}")
+                    st.write(f"   Tokens: {entity['tokens']}")
+                    st.write(f"   Tags: {entity['individual_tags']}")
+                    st.write("---")
             else:
                 st.info("ℹ️ Aucune entité trouvée.")
         
-        with tabs[2]:  # Statistiques
+        with tabs[3]:  # Statistiques
             if results['entities']:
                 # Distribution par type
                 type_counts = {}
@@ -751,31 +853,50 @@ def biomedical_ner_page():
                     entity_type = ENTITY_NAMES_JNLPBA.get(entity['tag'], entity['type'])
                     type_counts[entity_type] = type_counts.get(entity_type, 0) + 1
                 
-                # Graphique
-                if type_counts:
-                    fig = px.bar(
-                        x=list(type_counts.keys()),
-                        y=list(type_counts.values()),
-                        title="Distribution des types d'entités",
-                        labels={'x': 'Type', 'y': 'Nombre'},
-                        color=list(type_counts.keys()),
-                        color_discrete_map={
-                            'DNA': '#FF6B6B',
-                            'RNA': '#4ECDC4',
-                            'Protein': '#45B7D1',
-                            'Cell Type': '#96CEB4',
-                            'Cell Line': '#6D664F'
-                        }
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+                # Distribution des tags B- vs I-
+                tag_counts = {}
+                for _, tag in results['predictions']:
+                    if tag not in ['O', '<PAD>']:
+                        tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if type_counts:
+                        fig = px.bar(
+                            x=list(type_counts.keys()),
+                            y=list(type_counts.values()),
+                            title="Distribution des types d'entités",
+                            labels={'x': 'Type', 'y': 'Nombre'},
+                            color=list(type_counts.keys()),
+                            color_discrete_map={
+                                'DNA': '#FF6B6B',
+                                'RNA': '#4ECDC4',
+                                'Protein': '#45B7D1',
+                                'Cell Type': '#96CEB4',
+                                'Cell Line': '#6D664F'
+                            }
+                        )
+                        st.plotly_chart(fig,  width='stretch')
+                
+                with col2:
+                    if tag_counts:
+                        fig = px.pie(
+                            values=list(tag_counts.values()),
+                            names=list(tag_counts.keys()),
+                            title="Distribution des tags BIO",
+                            color=list(tag_counts.keys()),
+                            color_discrete_map=ENTITY_COLORS_JNLPBA
+                        )
+                        st.plotly_chart(fig,  width='stretch')
                 
                 # Longueur moyenne des entités
                 avg_length = np.mean([len(e['tokens']) for e in results['entities']])
                 st.metric("Longueur moyenne", f"{avg_length:.1f} tokens")
         
         # Onglet débogage (si activé)
-        if debug_jnlpba and len(tabs) > 3:
-            with tabs[3]:  # Détails débogage
+        if debug_jnlpba and len(tabs) > 4:
+            with tabs[4]:  # Détails débogage
                 display_debug_info(results['predictions'], results['entities'], 'JNLPBA')
         
         # Export
@@ -788,6 +909,7 @@ def biomedical_ner_page():
             # Export JSON
             export_data = {
                 'text': results['text'],
+                'predictions': [{'token': t, 'tag': tag} for t, tag in results['predictions']],
                 'entities': results['entities'],
                 'timestamp': results['timestamp'],
                 'processing_time': results['processing_time'],
@@ -801,30 +923,30 @@ def biomedical_ner_page():
                 data=json_str,
                 file_name="bio_ner_results_jnlpba.json",
                 mime="application/json",
-                use_container_width=True
+                 width='stretch'
             )
         
         with col2:
-            # Export CSV
-            if results['entities']:
+            # Export CSV des prédictions
+            if results['predictions']:
                 df_data = []
-                for entity in results['entities']:
+                for idx, (token, tag) in enumerate(results['predictions']):
                     df_data.append({
-                        'entity': entity['text'],
-                        'type': ENTITY_NAMES_JNLPBA.get(entity['tag'], entity['type']),
-                        'tag': entity['tag'],
-                        'tokens': ' '.join(entity['tokens'])
+                        'position': idx,
+                        'token': token,
+                        'tag': tag,
+                        'type': ENTITY_NAMES_JNLPBA.get(tag, tag[2:] if tag.startswith(('B-', 'I-')) else tag) if tag not in ['O', '<PAD>'] else 'Other'
                     })
                 
                 df = pd.DataFrame(df_data)
                 csv = df.to_csv(index=False)
                 
                 st.download_button(
-                    label="📊 Télécharger CSV",
+                    label="📊 Télécharger CSV (Prédictions)",
                     data=csv,
-                    file_name="bio_ner_entities_jnlpba.csv",
+                    file_name="bio_ner_predictions_jnlpba.csv",
                     mime="text/csv",
-                    use_container_width=True
+                     width='stretch'
                 )
 
 def disease_ner_page():
@@ -867,7 +989,7 @@ def disease_ner_page():
         - **Device:** {predictor.device}
         """)
         
-        # Option de débogage - CORRIGÉ
+        # Option de débogage
         st.markdown("---")
         debug_ncbi = st.checkbox("Afficher les infos de débogage", key="debug_ncbi_checkbox")
     
@@ -902,24 +1024,49 @@ def disease_ner_page():
         )
     }
     
+    # Définir les callbacks pour NCBI
+    def set_ncbi_example_cancer():
+        st.session_state.example_text_ncbi = examples["Cancer"]
+        st.session_state.text_area_ncbi = examples["Cancer"]
+    
+    def set_ncbi_example_genetique():
+        st.session_state.example_text_ncbi = examples["Maladies Génétiques"]
+        st.session_state.text_area_ncbi = examples["Maladies Génétiques"]
+    
+    def set_ncbi_example_infectieuses():
+        st.session_state.example_text_ncbi = examples["Maladies Infectieuses"]
+        st.session_state.text_area_ncbi = examples["Maladies Infectieuses"]
+    
+    def set_ncbi_example_test():
+        st.session_state.example_text_ncbi = examples["Test Simple"]
+        st.session_state.text_area_ncbi = examples["Test Simple"]
+    
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        if st.button("🎗️ Exemple Cancer", use_container_width=True, key="ex4_ncbi"):
-            st.session_state.example_text_ncbi = examples["Cancer"]
+        st.button("🎗️ Exemple Cancer", 
+                  on_click=set_ncbi_example_cancer, 
+                   width='stretch',
+                  key="ex4_ncbi")
     with col2:
-        if st.button("🧬 Exemple Génétique", use_container_width=True, key="ex5_ncbi"):
-            st.session_state.example_text_ncbi = examples["Maladies Génétiques"]
+        st.button("🧬 Exemple Génétique", 
+                  on_click=set_ncbi_example_genetique, 
+                   width='stretch',
+                  key="ex5_ncbi")
     with col3:
-        if st.button("🦠 Exemple Infectieuses", use_container_width=True, key="ex6_ncbi"):
-            st.session_state.example_text_ncbi = examples["Maladies Infectieuses"]
+        st.button("🦠 Exemple Infectieuses", 
+                  on_click=set_ncbi_example_infectieuses, 
+                   width='stretch',
+                  key="ex6_ncbi")
     with col4:
-        if st.button("🧪 Test Simple", use_container_width=True, key="ex7_ncbi"):
-            st.session_state.example_text_ncbi = examples["Test Simple"]
+        st.button("🧪 Test Simple", 
+                  on_click=set_ncbi_example_test, 
+                   width='stretch',
+                  key="ex7_ncbi")
     
     # Zone de texte
     text_input = st.text_area(
         "**Texte à analyser:**",
-        value=st.session_state.get('example_text_ncbi', ''),
+        value=st.session_state.get('text_area_ncbi', ''),
         height=200,
         placeholder="Collez votre texte biomédical ici...",
         key="text_area_ncbi"
@@ -928,7 +1075,7 @@ def disease_ner_page():
     # Bouton de prédiction
     col1, col2 = st.columns([3, 1])
     with col2:
-        analyze = st.button("🔍 Analyser le texte", type="primary", use_container_width=True, key="analyze_ncbi")
+        analyze = st.button("🔍 Analyser le texte", type="primary",  width='stretch', key="analyze_ncbi")
     
     if analyze:
         if not text_input.strip():
@@ -982,11 +1129,11 @@ def disease_ner_page():
                 st.metric("Longueur moyenne", "0")
         
         # Onglets
-        tab_names = ["📄 Texte annoté", "📊 Liste des maladies", "📈 Statistiques"]
+        tab_names = ["📄 Texte annoté", "🔍 Prédictions brutes", "📊 Entités groupées", "📈 Statistiques"]
         
         # Ajouter l'onglet débogage si l'option est activée
         if debug_ncbi:
-            tab_names.append("🔍 Détails")
+            tab_names.append("🐛 Détails Débogage")
         
         tabs = st.tabs(tab_names)
         
@@ -995,63 +1142,127 @@ def disease_ner_page():
             highlighted = highlight_text(results['text'], results['predictions'], 'NCBI')
             st.markdown(f'<div class="results-box">{highlighted}</div>', unsafe_allow_html=True)
         
-        with tabs[1]:  # Liste des maladies
+        with tabs[1]:  # Prédictions brutes
+            st.markdown("#### Prédictions brutes du modèle")
+            
+            # Afficher sous forme de tableau
+            if results['predictions']:
+                df_data = []
+                for idx, (token, tag) in enumerate(results['predictions']):
+                    is_entity = tag not in ['O', '<PAD>']
+                    color = ENTITY_COLORS_NCBI.get(tag, 'transparent') if is_entity else 'transparent'
+                    
+                    df_data.append({
+                        'Position': idx,
+                        'Token': token,
+                        'Tag': tag,
+                        'Type': ENTITY_NAMES_NCBI.get(tag, tag[2:] if tag.startswith(('B-', 'I-')) else tag) if is_entity else 'Autre',
+                        'Couleur': color
+                    })
+                
+                df = pd.DataFrame(df_data)
+                
+                # Afficher avec mise en forme des couleurs
+                def color_row(row):
+                    if row['Couleur'] != 'transparent':
+                        return [f'background-color: {row["Couleur"]}'] * len(row)
+                    return [''] * len(row)
+                
+                st.dataframe(df.style.apply(color_row, axis=1), width='stretch', hide_index=True)
+                
+                # Afficher aussi sous forme de texte
+                st.markdown("#### Format texte:")
+                text_output = []
+                for token, tag in results['predictions']:
+                    if tag != 'O' and tag != '<PAD>':
+                        text_output.append(f"**{token}** ({tag})")
+                    else:
+                        text_output.append(token)
+                st.write(' '.join(text_output))
+        
+        with tabs[2]:  # Entités groupées
             if results['entities']:
                 df_data = []
                 for entity in results['entities']:
                     entity_name = ENTITY_NAMES_NCBI.get(entity['tag'], entity['type'])
+                    
                     df_data.append({
                         'Maladie': entity['text'],
                         'Type': entity_name,
-                        'Tag': entity['tag'],
-                        'Mots': len(entity['tokens']),
+                        'Tag Principal': entity['tag'],
+                        'Tags Individuels': ', '.join(entity['individual_tags']),
+                        'Nombre de Tokens': len(entity['tokens']),
                         'Position': f"{entity['start_position']}-{entity['end_position']}"
                     })
                 
                 df = pd.DataFrame(df_data)
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df,  width='stretch', hide_index=True)
                 
-                # Afficher un résumé
-                st.markdown("#### 📋 Résumé des maladies trouvées:")
+                # Afficher aussi le détail des tags
+                st.markdown("#### Détail des tags par maladie:")
                 for i, entity in enumerate(results['entities'], 1):
-                    st.write(f"{i}. **{entity['text']}** ({len(entity['tokens'])} mots, tag: {entity['tag']})")
+                    st.write(f"**{i}. {entity['text']}**")
+                    st.write(f"   Type: {entity['type']}")
+                    st.write(f"   Tokens: {entity['tokens']}")
+                    st.write(f"   Tags: {entity['individual_tags']}")
+                    st.write("---")
             else:
                 st.info("ℹ️ Aucune maladie trouvée.")
         
-        with tabs[2]:  # Statistiques
+        with tabs[3]:  # Statistiques
             if results['entities']:
                 # Distribution par longueur
                 lengths = [len(e['tokens']) for e in results['entities']]
                 
-                if lengths:
-                    fig = px.histogram(
-                        x=lengths,
-                        title="Distribution des longueurs des maladies",
-                        labels={'x': 'Nombre de mots', 'y': 'Fréquence'},
-                        nbins=10
-                    )
-                    fig.update_layout(
-                        xaxis_title="Nombre de mots par maladie",
-                        yaxis_title="Nombre de maladies"
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # Statistiques descriptives
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Moyenne", f"{np.mean(lengths):.1f}")
-                    with col2:
-                        st.metric("Médiane", f"{np.median(lengths):.1f}")
-                    with col3:
-                        st.metric("Min", f"{min(lengths)}")
-                    with col4:
-                        st.metric("Max", f"{max(lengths)}")
+                # Distribution des tags
+                tag_counts = {}
+                for _, tag in results['predictions']:
+                    if tag not in ['O', '<PAD>']:
+                        tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if lengths:
+                        fig = px.histogram(
+                            x=lengths,
+                            title="Distribution des longueurs des maladies",
+                            labels={'x': 'Nombre de mots', 'y': 'Fréquence'},
+                            nbins=10
+                        )
+                        fig.update_layout(
+                            xaxis_title="Nombre de mots par maladie",
+                            yaxis_title="Nombre de maladies"
+                        )
+                        st.plotly_chart(fig,  width='stretch')
+                
+                with col2:
+                    if tag_counts:
+                        fig = px.pie(
+                            values=list(tag_counts.values()),
+                            names=list(tag_counts.keys()),
+                            title="Distribution des tags BIO",
+                            color=list(tag_counts.keys()),
+                            color_discrete_map=ENTITY_COLORS_NCBI
+                        )
+                        st.plotly_chart(fig,  width='stretch')
+                
+                # Statistiques descriptives
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Moyenne", f"{np.mean(lengths):.1f}")
+                with col2:
+                    st.metric("Médiane", f"{np.median(lengths):.1f}")
+                with col3:
+                    st.metric("Min", f"{min(lengths)}")
+                with col4:
+                    st.metric("Max", f"{max(lengths)}")
             else:
                 st.info("ℹ️ Aucune statistique disponible (pas de maladies trouvées)")
         
         # Onglet débogage (si activé)
-        if debug_ncbi and len(tabs) > 3:
-            with tabs[3]:  # Détails débogage
+        if debug_ncbi and len(tabs) > 4:
+            with tabs[4]:  # Détails débogage
                 display_debug_info(results['predictions'], results['entities'], 'NCBI')
         
         # Export
@@ -1064,6 +1275,7 @@ def disease_ner_page():
             # Export JSON
             export_data = {
                 'text': results['text'],
+                'predictions': [{'token': t, 'tag': tag} for t, tag in results['predictions']],
                 'entities': results['entities'],
                 'timestamp': results['timestamp'],
                 'processing_time': results['processing_time'],
@@ -1077,32 +1289,31 @@ def disease_ner_page():
                 data=json_str,
                 file_name="disease_ner_results_ncbi.json",
                 mime="application/json",
-                use_container_width=True,
+                 width='stretch',
                 key="download_json_ncbi"
             )
         
         with col2:
-            # Export CSV
-            if results['entities']:
+            # Export CSV des prédictions
+            if results['predictions']:
                 df_data = []
-                for entity in results['entities']:
+                for idx, (token, tag) in enumerate(results['predictions']):
                     df_data.append({
-                        'disease': entity['text'],
-                        'type': ENTITY_NAMES_NCBI.get(entity['tag'], entity['type']),
-                        'tag': entity['tag'],
-                        'token_count': len(entity['tokens']),
-                        'tokens': ' '.join(entity['tokens'])
+                        'position': idx,
+                        'token': token,
+                        'tag': tag,
+                        'type': ENTITY_NAMES_NCBI.get(tag, tag[2:] if tag.startswith(('B-', 'I-')) else tag) if tag not in ['O', '<PAD>'] else 'Other'
                     })
                 
                 df = pd.DataFrame(df_data)
                 csv = df.to_csv(index=False)
                 
                 st.download_button(
-                    label="📊 Télécharger CSV",
+                    label="📊 Télécharger CSV (Prédictions)",
                     data=csv,
-                    file_name="disease_entities_ncbi.csv",
+                    file_name="disease_ner_predictions_ncbi.csv",
                     mime="text/csv",
-                    use_container_width=True,
+                     width='stretch',
                     key="download_csv_ncbi"
                 )
 
@@ -1203,19 +1414,14 @@ def main():
         )
         
         st.markdown("---")
-        st.markdown("#### 📁 Chemins configurés")
+        st.markdown("#### 🔧 Débogage")
         st.markdown("""
-        **JNLPBA:**
-        - Modèle: `./checkpoints/JNLPBA/...`
-        - Vocab: `./vocab/jnlpba`
-        - Embeddings: `./word2Vecembeddings/jnlpba_word2vec`
-        
-        **NCBI:**
-        - Modèle: `./checkpoints/NCBI/...`
-        - Vocab: `./vocab/ncbi`
-        - Embeddings: `./word2Vecembeddings/ncbi.model`
+        - ✅ Tags affichés dans le highlight
+        - ✅ Tableau des prédictions brutes
+        - ✅ Tags individuels par entité
+        - ✅ Couleurs cohérentes
         """)
-    
+        
     # Afficher la page sélectionnée
     if page == "🏥 Biomedical NER":
         biomedical_ner_page()
